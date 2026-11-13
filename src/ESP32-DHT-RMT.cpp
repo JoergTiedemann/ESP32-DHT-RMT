@@ -1,4 +1,4 @@
-// https://github.com/htmltiger/dhtESP32-rmt
+// https://github.com/joergtiedemann/ESP32-DHT-RMT
 
 #include <Arduino.h>
 #include "ESP32-DHT-RMT.h"
@@ -95,7 +95,10 @@ uint8_t CDHT22::read_dht(float &temperature, float &humidity, uint8_t pin, uint8
 		m_duration0pulse = cur[0].duration1;
 		m_duration1pulse = cur[1].duration0;
 
-		if (len < 42) {
+		if (len == 1) {
+			error = DHT_TIMEOUT1;
+			m_errorlen = len;
+		} else if (len < 42) {
 			error = DHT_UNDERFLOW;
 			m_errorlen = len;
 		} else if (len > 43) {
@@ -158,6 +161,7 @@ String CDHT22::errorToString(uint8_t error) {
     case DHT_TOO_SOON:  return "Too soon";
     case DHT_DRIVER:    return "RMT driver error";
     case DHT_TIMEOUT:   return "Sensor timeout";
+    case DHT_TIMEOUT1:  return "Sensor timeout, 1 Bit received";
     case DHT_NACK:      return "Invalid ACK! Pulseduration0:" + String(m_errorduration0pulse) + "us, Pulseduration1:" + String(m_errorduration1pulse)+"us";
     case DHT_BAD_DATA:  return "Bad data pulse! Pulseduration0:" + String(m_errordataduration0pulse) + "us, Pulseduration1:" + String(m_errordataduration1pulse)+"us";
     case DHT_CHECKSUM:  return "Checksum error";
