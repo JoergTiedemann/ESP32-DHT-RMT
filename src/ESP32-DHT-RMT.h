@@ -24,23 +24,38 @@
 #define DHT_UNDERFLOW	7
 #define DHT_OVERFLOW	8
 
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2
+#define MAX_BLOCKS	64
+#else
+#define MAX_BLOCKS	48
+#endif
 
-class DHT22 {
+class CDHT22 {
 public:
-    DHT22() 
+    CDHT22();
     uint8_t read_dht(float &temperature, float &humidity, uint8_t pin, uint8_t dhttype);
     void get_nakduration(float &duration0, float &duration1); 
     void set_minmaxpulse(int minpulse, int maxpulse); 
     /**
      * Get human-readable error string.
      */
-    static const char* errorToString(uint8_t error);
-private:
+    String errorToString(uint8_t error);
+
+    	
+    rmt_symbol_word_t symbols[MAX_BLOCKS];
+	rmt_rx_done_event_data_t rx_data;
+
+    private:
     int m_minpulse;
     int m_maxpulse;
     int	m_duration0pulse;
-    int m_duration1pulse;    
-}
+    int m_duration1pulse;
+	int m_errorduration0pulse;
+	int m_errorduration1pulse;
+	int m_errordataduration0pulse;
+	int m_errordataduration1pulse;
+    size_t m_errorlen;
+};
 
 
 static bool IRAM_ATTR dhtrx_done(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t *edata, void *udata){

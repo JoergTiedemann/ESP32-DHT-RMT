@@ -2,9 +2,9 @@
 Non blocking DHT22 Library for ESP32 using RMT Module
 
 
-This library works with DHT22 / AM2302 modules like these:
+This library works with DHT22 / AM2302 modules.
 
-![ModuleDHT22](https://github.com/user-attachments/assets/4d5a24fa-a26c-43e7-865a-bec4b7b953e4)
+
 
 
 ## Features
@@ -45,54 +45,51 @@ Optional but recommended: 4.7kΩ resistor between DATA and 3.3V
 ```cpp
 #include <ESP32-DHT22-RMT.h>
 
-DHT22Clone dht(14);  // GPIO14
+CDHT dht;  // GPIO14
 
 void setup() {
   Serial.begin(115200);
 }
 
 void loop() {
-  DHT22Clone_Result result = dht.read();
+    float tempC = 0.0;
+    float humi = 0.0;
 
-  if (result.error == DHT22_OK) {
-    Serial.printf("Temp: %.1f°C  Hum: %.1f%%\n", 
-      result.temperature, result.humidity);
-  } else {
-    Serial.printf("Error: %s\n", DHT22Clone::errorToString(result.error));
-  }
+    uint8_t error=dht.read_dht(tempC, humi, 14, DHT22);
+    if(error)
+    {
+      Serial.println("Error:", dht.errorToString(error));
+    }
+    else
+    {
+      Serial.printf("Temp: %.1f°C  Hum: %.1f%%\n", tempC, humi);
 
+    }
   delay(3000);
 }
 ```
 
 ## API Reference
 
-### Constructor
+* Read Humidity and temperature
 
-```cpp
-DHT22 dht(pin);                    // Auto-detect encoding (recommended)
-DHT22 dht(pin, DHT22_CLONE);       // Force two's complement
-DHT22 dht(pin, DHT22_ORIGINAL);    // Force sign-bit encoding
+``` 
+uint8_t read_dht(float &temperature, float &humidity, uint8_t pin, uint8_t dhttype);
 ```
 
-### Reading
-
-```cpp
-DHT22Clone_Result result = dht.read();
-
-result.temperature  // float, °C
-result.humidity     // float, %
-result.error        // uint8_t, 0 = OK
-result.raw[0..4]    // raw bytes from sensor
+* get duration of ACK low and high pulse (for diagnostic) 
+```
+void get_nakduration(float &duration0, float &duration1); 
+```
+* get min and max duration of ACK low and high pulse (to adjust bad sensor timings) 
+```
+void set_minmaxpulse(int minpulse, int maxpulse); 
+```
+* get human readable String for errors
+```
+String errorToString(uint8_t error);
 ```
 
-### Convenience methods
-
-```cpp
-dht.getTemperature()   // last successful temperature
-dht.getHumidity()      // last successful humidity
-dht.getLastError()     // last error code
-```
 
 ### Error codes
 

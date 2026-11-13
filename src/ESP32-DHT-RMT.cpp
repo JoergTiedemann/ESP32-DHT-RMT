@@ -4,13 +4,7 @@
 #include "ESP32-DHT-RMT.h"
 #include "sdkconfig.h"
 
-#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2
-#define MAX_BLOCKS	64
-#else
-#define MAX_BLOCKS	48
-#endif
-
-DHT22::DHT22() 
+CDHT22::CDHT22() 
 {
 	m_minpulse = 130;
 	m_maxpulse = 180;
@@ -18,23 +12,38 @@ DHT22::DHT22()
 	m_duration1pulse = 0;
 }
 
-void DHT22::get_nakduration(float &duration0, float &duration1) 
+void CDHT22::get_nakduration(float &duration0, float &duration1) 
 {
 	duration0 = m_duration0pulse;
 	duration1 = m_duration1pulse;
 }
 
-void DHT22::set_minmaxpulse(int minpulse, int maxpulse) 
+void CDHT22::set_minmaxpulse(int minpulse, int maxpulse) 
 {
 	m_minpulse =minpulse;
 	m_maxpulse = maxpulse;
 }
 
-uint8_t DHT22::read_dht(float &temperature, float &humidity, uint8_t pin, uint8_t dhttype) {
+
+/*
+Auszug aus den Rohdaten die empfangen wurden
+DHT22: Received 43 symbols
+DHT22: Received Symbol:0, Duration0:21 Level0:1, Duration1:79 Level1:0 -> das ist der High Puls nachdem die Leitung vom ESP auf High gezogen wurde und der Lowpuls von 80us der vom DHT22 kommt
+DHT22: Received Symbol:1, Duration0:82 Level0:1, Duration1:54 Level1:0 -> das ist der High Puls von 80us der vom DHT22 kommt und der Lowpuls des 1. Bits der Daten
+DHT22: Received Symbol:2, Duration0:26 Level0:1, Duration1:54 Level1:0 -> das ist der High Puls des 1. Bits der Datenund der Lowpuls des 2. Bits der Daten vom DHT22 usw. 
+DHT22: Received Symbol:3, Duration0:26 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:4, Duration0:26 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:5, Duration0:26 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:6, Duration0:26 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:7, Duration0:26 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:8, Duration0:74 Level0:1, Duration1:54 Level1:0
+DHT22: Received Symbol:9, Duration0:25 Level0:1, Duration1:67 Level1:0
+wir koennen nach dem xQueueReceive(... nix in den Serial Port schreiben entweder weil wir in einer ISR sind oder weil wir zu wenig Stack haben
+daher die Daten als globale Member Variablen speichern und dann in der Task ausgeben
+*/
+uint8_t CDHT22::read_dht(float &temperature, float &humidity, uint8_t pin, uint8_t dhttype) {
 	gpio_num_t dhtpin = static_cast<gpio_num_t>(pin);
 	rmt_channel_handle_t rx_channel = NULL;
-	rmt_symbol_word_t symbols[MAX_BLOCKS];
-	rmt_rx_done_event_data_t rx_data;
 	
 	rmt_receive_config_t rx_config = {
 		.signal_range_min_ns = 3000,
@@ -64,44 +73,57 @@ uint8_t DHT22::read_dht(float &temperature, float &humidity, uint8_t pin, uint8_
 	gpio_pulldown_dis(dhtpin);
 	gpio_set_direction(dhtpin, GPIO_MODE_INPUT_OUTPUT_OD);
 	gpio_set_intr_type(dhtpin, GPIO_INTR_DISABLE);
+	// 3. Leitung auf Low ziehen (Start-Impuls beginnen)
 	gpio_set_level(dhtpin, 0);
+
+	// 4. RMT scharfschalten, WÄHREND die Leitung noch Low ist! -> RMT Receive startet, sobald die Leitung wieder High geht
+	if (rmt_enable(rx_channel) != ESP_OK || rmt_receive(rx_channel, symbols, sizeof(symbols), &rx_config) != ESP_OK) {
+		return DHT_DRIVER;
+	}
+	// 5. Restliche Wartezeit für das Startsignal abwarten  und Leitung freigeben
 	vTaskDelay((dhttype == DHT22 ? 2 : 22) / portTICK_PERIOD_MS);
 	gpio_set_level(dhtpin, 1);
 	
-	
-	if(rmt_enable(rx_channel) || rmt_receive(rx_channel, symbols, sizeof(symbols), &rx_config) != ESP_OK ) {
-		return DHT_DRIVER;
-	}
-
 	if (xQueueReceive(rx_queue, &rx_data, pdMS_TO_TICKS(100)) == pdPASS) {
-		
-		char buf[128];
 		size_t len = rx_data.num_symbols;
-
 		uint32_t code = 0;
 		rmt_symbol_word_t *cur = rx_data.received_symbols;
-		uint8_t pulse = cur[0].duration0 + cur[0].duration1;
-		m_duration0pulse = cur[0].duration0;
-		m_duration1pulse = cur[0].duration1;
-		if(len < 41){
+
+		// Handshake-Puls (ACK): 80us Low (cur[0].duration1) + 80us High (cur[1].duration0)
+		uint16_t pulse = cur[0].duration1 + cur[1].duration0;
+
+		m_duration0pulse = cur[0].duration1;
+		m_duration1pulse = cur[1].duration0;
+
+		if (len < 42) {
 			error = DHT_UNDERFLOW;
-		}else if(len > 42){
+			m_errorlen = len;
+		} else if (len > 43) {
 			error = DHT_OVERFLOW;
-		}else if((pulse) < m_minpulse || (pulse) > m_maxpulse){
+			m_errorlen = len;
+		} else if (pulse < m_minpulse || pulse > m_maxpulse) {
+			m_errorduration0pulse = cur[0].duration1;
+			m_errorduration1pulse = cur[1].duration0;
 			error = DHT_NACK;
-		}else{
-			uint8_t data[6];
-			for(uint8_t i = 0; i < 40; i++){
-				pulse = cur[i+1].duration0 + cur[i+1].duration1;
-				if(pulse > 55 && pulse < 145){
+		} else {
+			uint8_t data[6] = {0}; // WICHTIG: Array mit 0 initialisieren!
+			for (uint8_t i = 0; i < 40; i++) {
+				// Jedes Bit besteht aus Low-Phase (cur[i+1].duration1) + High-Phase (cur[i+2].duration0)
+				pulse = cur[i + 1].duration1 + cur[i + 2].duration0;
+				
+				if (pulse > 55 && pulse < 145) {
 					data[i / 8] <<= 1;
-					if(pulse > 110){
+					if (pulse > 110) {
 						data[i / 8] |= 1;
 					}
-				}else{
+				} else {
 					error = DHT_BAD_DATA;
+					m_errordataduration0pulse = cur[i + 1].duration1;
+					m_errordataduration1pulse = cur[i + 2].duration0;
+					break; // Bei Fehler Schleife direkt abbrechen, damit Fehlerwerte nicht überschrieben werden
 				}
-			}
+			}	
+			// Hier folgt deine Checksummen- und Temperatur-/Feuchtigkeitsberechnung mit data[0..4]
 			if(!error){
 				uint8_t total = data[0] + data[1] + data[2] + data[3];
 				if(data[4] == total){
@@ -130,16 +152,17 @@ uint8_t DHT22::read_dht(float &temperature, float &humidity, uint8_t pin, uint8_
 }
 
 
-const char* DHT22::errorToString(uint8_t error) {
+String CDHT22::errorToString(uint8_t error) {
   switch (error) {
-    case DHT22_OK:        return "OK";
-    case DHT22_DRIVER:    return "RMT driver error";
-    case DHT22_TIMEOUT:   return "Sensor timeout";
-    case DHT22_NACK:      return "Invalid ACK";
-    case DHT22_BAD_DATA:  return "Bad data pulse";
-    case DHT22_CHECKSUM:  return "Checksum error";
-    case DHT22_UNDERFLOW: return "Too few bits";
-    case DHT22_OVERFLOW:  return "Too many bits";
-    default:              return "Unknown error";
+    case DHT_OK:        return "OK";
+    case DHT_TOO_SOON:  return "Too soon";
+    case DHT_DRIVER:    return "RMT driver error";
+    case DHT_TIMEOUT:   return "Sensor timeout";
+    case DHT_NACK:      return "Invalid ACK! Pulseduration0:" + String(m_errorduration0pulse) + "us, Pulseduration1:" + String(m_errorduration1pulse)+"us";
+    case DHT_BAD_DATA:  return "Bad data pulse! Pulseduration0:" + String(m_errordataduration0pulse) + "us, Pulseduration1:" + String(m_errordataduration1pulse)+"us";
+    case DHT_CHECKSUM:  return "Checksum error";
+    case DHT_UNDERFLOW: return "Too few bits! Received bits: " + String(m_errorlen);
+    case DHT_OVERFLOW:  return "Too many bits! Received bits: " + String(m_errorlen);
+    default:            return "Unknown error";
   }
 }
